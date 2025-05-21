@@ -49,6 +49,9 @@ from ..tensor.quantized_tensor import (
     restore_from_saved,
 )
 
+from ..tensor.float8_blockwise_tensor import Float8BlockwiseQTensorBase
+from ..tensor.mxfp8_tensor import MXFP8TensorBase
+
 __all__ = ["GroupedLinear"]
 
 
@@ -95,15 +98,14 @@ class _GroupedLinear(torch.autograd.Function):
                     rowwise=True,
                     columnwise=(is_grad_enabled and weight_requires_grad),
                 )
-            columnwise_usage = is_grad_enabled and inp.requires_grad
-            if not columnwise_usage:
-                columnwise_usage = (
-                    is_fp8_activation_recompute_enabled()
-                    and not in_fp8_activation_recompute_phase()
-                )
-            if weight_quantizers[0] is not None:
-                for weight_quantizer in weight_quantizers:
-                    weight_quantizer.set_usage(rowwise=True, columnwise=columnwise_usage)
+        columnwise_usage = is_grad_enabled and inp.requires_grad
+        if not columnwise_usage:
+            columnwise_usage = (
+                is_fp8_activation_recompute_enabled() and not in_fp8_activation_recompute_phase()
+            )
+        if weight_quantizers[0] is not None:
+            for weight_quantizer in weight_quantizers:
+                weight_quantizer.set_usage(rowwise=True, columnwise=columnwise_usage)
         if output_quantizers[0] is not None:
             for output_quantizer in output_quantizers:
                 output_quantizer.set_usage(rowwise=True, columnwise=False)
@@ -117,10 +119,15 @@ class _GroupedLinear(torch.autograd.Function):
             )
         inp_view = inp.reshape(-1, in_features)
         inputmats: list
-        if fp8:
-            inputmats = tex.split_quantize(inp_view, m_splits, input_quantizers)
+        if isinstance(inp, QuantizedTensorBase):
+            # If the input is a quantized tensor, split it 
+            inputmats = inp.split(m_splits)
         else:
-            inputmats = torch.split(cast_if_needed(inp_view, activation_dtype), m_splits)
+            if fp8:
+                # If the input is not quantized, quantize + split
+                inputmats = tex.split_quantize(inp_view, m_splits, input_quantizers)
+            else:
+                inputmats = torch.split(cast_if_needed(inp_view, activation_dtype), m_splits)
 
         # Initialize weights
         weights_fp8: list
@@ -186,17 +193,19 @@ class _GroupedLinear(torch.autograd.Function):
         if is_grad_enabled:
             ctx.weight_quantizers = weight_quantizers
             ctx.weights_shape_1 = weights[0].shape[1]
-
             # TODO: update after #1638 is merged. # pylint: disable=fixme
             if weight_requires_grad:
-                for inputmat in inputmats:
+                for inputmat in inputmats:        
                     if isinstance(inputmat, QuantizedTensorBase):
+                        # Create columnwise data if not already present.
+                        inputmat.update_usage(rowwise_usage=True, columnwise_usage=True)
+                        # Release rowwise data.
                         inputmat.update_usage(rowwise_usage=False, columnwise_usage=True)
             if inp.requires_grad:
                 for weight in weights_fp8:
                     if isinstance(weight, QuantizedTensorBase):
                         weight.update_usage(columnwise_usage=True)
-
+        
             tensors_to_save, tensor_objects = prepare_for_saving(
                 *inputmats,
                 *weights_fp8,
@@ -265,10 +274,14 @@ class _GroupedLinear(torch.autograd.Function):
 
             # Preprocess grad output
             grad_output_view = grad_output.contiguous().view(-1, grad_output.shape[-1])
+
+            # Check if the grad_output is a quantized tensor
+            fp8_grad_output = isinstance(grad_output, QuantizedTensorBase)
             grad_output = [None] * ctx.num_gemms
             grad_biases = [None] * ctx.num_gemms
             if ctx.fp8:
                 if ctx.use_bias:
+                    assert not fp8_grad_output, "FP8 grad_output does not support bias."
                     grad_output_mats = torch.split(grad_output_view, ctx.m_splits)
                     recipe = ctx.fp8_recipe
                     if recipe.delayed() or recipe.float8_current_scaling() or recipe.mxfp8():
@@ -288,12 +301,20 @@ class _GroupedLinear(torch.autograd.Function):
                             ctx.grad_output_quantizers,
                         )
                 else:
-                    # Multi-tensor quantize
-                    grad_output = tex.split_quantize(
-                        grad_output_view,
-                        ctx.m_splits,
-                        ctx.grad_output_quantizers,
-                    )
+                    if fp8_grad_output:
+                        # If the input grad_output is quantized
+                        grad_output_mats = grad_output_view.split(ctx.m_splits)
+                        for grad_output_mat in grad_output_mats:
+                            # Dequantize -> transpose -> quantize
+                            grad_output_mat.update_usage(rowwise_usage=True, columnwise_usage=True)
+                        grad_output = grad_output_mats
+                    else:
+                        # Multi-tensor quantize
+                        grad_output = tex.split_quantize(
+                            grad_output_view,
+                            ctx.m_splits,
+                            ctx.grad_output_quantizers,
+                        )
             else:
                 # Only split grad output. Grad bias is fused with
                 # wgrad GEMM.
@@ -374,7 +395,6 @@ class _GroupedLinear(torch.autograd.Function):
                     ctx.wgrad_store.put([inputmats, grad_output, wgrad_list], grouped_gemm_wgrad)
                 else:
                     _, grad_biases_, _ = grouped_gemm_wgrad(inputmats, grad_output, wgrad_list)
-
                     for i in range(ctx.num_gemms):
                         if grad_biases[i] is None:
                             grad_biases[i] = grad_biases_[i]
@@ -426,7 +446,7 @@ class _GroupedLinear(torch.autograd.Function):
                 and not ctx.fp8
             ):
                 grad_biases = [None] * ctx.num_gemms
-
+  
         if ctx.reduce_and_update_bwd_fp8_tensors and not is_graph_capturing():
             FP8GlobalStateManager.reduce_and_update_fp8_tensors(forward=False)
         return (
@@ -687,9 +707,14 @@ class GroupedLinear(TransformerEngineBaseModule):
                                first microbatch (since it is the first gradient being
                                produced)
         """
-        assert not isinstance(
-            inp, QuantizedTensorBase
-        ), "GroupedLinear doesn't support input tensor in FP8."
+        fp8_input = isinstance(inp, QuantizedTensorBase)
+        if fp8_input:
+            if not isinstance(inp, MXFP8TensorBase) and not isinstance(inp, Float8BlockwiseQTensorBase):
+                raise ValueError("GroupedLinear only support Float8BlockwiseQTensor/MXFP8Tensor input.")
+            if isinstance(inp, Float8BlockwiseQTensorBase):
+                assert (
+                    not inp._is_2D_scaled
+                ), "GroupedLinear only supports fp8 blockwise 1D scaled tensor"      
         assert len(m_splits) == self.num_gemms, "Number of splits should match number of GEMMs."
 
         if FP8GlobalStateManager.fp8_graph_capturing():
@@ -698,7 +723,6 @@ class GroupedLinear(TransformerEngineBaseModule):
             skip_fp8_weight_update = None
         if skip_fp8_weight_update is not None:
             is_first_microbatch = False
-
         with self.prepare_forward(inp, num_gemms=self.num_gemms) as inp:
             weight_tensors = self._get_weight_tensors()
             bias_tensors = [getattr(self, f"bias{i}") for i in range(self.num_gemms)]
