@@ -14,6 +14,7 @@ from ..fp8 import FP8GlobalStateManager
 from ..jit import no_torch_dynamo
 from ..tensor.quantized_tensor import QuantizedTensor
 from ..tensor.float8_blockwise_tensor import Float8BlockwiseQTensor
+from ..tensor.mxfp8_tensor import MXFP8Tensor
 
 __all__ = ["Fp8Unpadding"]
 
@@ -58,18 +59,19 @@ class _Fp8Unpadding(torch.autograd.Function):
                 # we should always pad the high precision tensors and then do multi-quantize.
                 # For MXFP8, padding doesn't make sense.
                 assert (
-                    isinstance(grad_output, Float8BlockwiseQTensor)
-                    and not grad_output._is_2D_scaled
+                    isinstance(grad_output, MXFP8Tensor) or
+                    (isinstance(grad_output, Float8BlockwiseQTensor) and not grad_output._is_2D_scaled and grad_output._data_format == tex.Float8BlockScaleTensorFormat.COMPACT)
                 ), (
-                    "Fp8Unpadding only supports fp32, bf16 or fp8 blockwise 1D scaled tensor "
-                    "with compact data and scales."
+                    "Fp8Unpadding only supports"
+                    "1. mxfp8"
+                    "2. blockwise 1D scaled tensor with compact data and scales."
                 )
 
                 in_features = grad_output._rowwise_data.shape[-1]
-                in_scale_features = grad_output._rowwise_scale_inv.T.shape[-1]
+                in_scale_features = grad_output._rowwise_scale_inv.shape[-1]
             
                 rowwise_data = grad_output._rowwise_data.view(-1, in_features)
-                rowwise_scale_inv = grad_output._rowwise_scale_inv.T.view(
+                rowwise_scale_inv = grad_output._rowwise_scale_inv.view(
                     -1, in_scale_features
                 ).contiguous()
 
@@ -91,19 +93,32 @@ class _Fp8Unpadding(torch.autograd.Function):
                     rowwise_scale_inv, grad_input_scale, ctx.m_splits, ctx.padded_m_splits
                 )
 
-                # FP8 pad input for forward, FP8 input transpose for backward wgrad
-                grad_input = Float8BlockwiseQTensor(
-                    shape=grad_input_data.shape,
-                    dtype=grad_output.dtype,
-                    rowwise_data=grad_input_data,
-                    rowwise_scale_inv=grad_input_scale.T.contiguous(),
-                    columnwise_data=None,
-                    columnwise_scale_inv=None,
-                    fp8_dtype=grad_output._fp8_dtype,
-                    quantizer=grad_output._get_quantizer(),
-                    is_2D_scaled=False,
-                    requires_grad=grad_output.requires_grad,
-                )
+                if isinstance(grad_output, MXFP8Tensor):
+                    grad_input = MXFP8Tensor(
+                        shape=grad_input_data.shape,
+                        dtype=grad_output.dtype,
+                        fp8_dtype=grad_output._fp8_dtype,
+                        rowwise_data=grad_input_data,
+                        rowwise_scale_inv=grad_input_scale.contiguous(),
+                        columnwise_data=None,
+                        columnwise_scale_inv=None,
+                        quantizer=grad_output._get_quantizer(),
+                        requires_grad=grad_output.requires_grad,
+                    )
+                elif isinstance(grad_output, Float8BlockwiseQTensor):
+                    grad_input = Float8BlockwiseQTensor(
+                        shape=grad_input_data.shape,
+                        dtype=grad_output.dtype,
+                        rowwise_data=grad_input_data,
+                        rowwise_scale_inv=grad_input_scale.contiguous(),
+                        columnwise_data=None,
+                        columnwise_scale_inv=None,
+                        fp8_dtype=grad_output._fp8_dtype,
+                        quantizer=grad_output._get_quantizer(),
+                        is_2D_scaled=False,
+                        requires_grad=grad_output.requires_grad,
+                        data_format=tex.Float8BlockScaleTensorFormat.COMPACT,
+                    )
             else:
                 in_features = grad_output.shape[-1]
 

@@ -14,6 +14,7 @@ from ..fp8 import FP8GlobalStateManager
 from ..jit import no_torch_dynamo
 from ..tensor.quantized_tensor import QuantizedTensor
 from ..tensor.float8_blockwise_tensor import Float8BlockwiseQTensor
+from ..tensor.mxfp8_tensor import MXFP8Tensor
 
 __all__ = ["Fp8Padding"]
 
@@ -38,18 +39,19 @@ class _Fp8Padding(torch.autograd.Function):
             # we should always pad the high precision tensors and then do multi-quantize.
             # For MXFP8, padding doesn't make sense.
             assert (
-                isinstance(inp, Float8BlockwiseQTensor)
-                and not inp._is_2D_scaled
+                isinstance(inp, MXFP8Tensor) or
+                (isinstance(inp, Float8BlockwiseQTensor) and not inp._is_2D_scaled and inp._data_format == tex.Float8BlockScaleTensorFormat.COMPACT)
             ), (
-                "Fp8Padding only supports fp32, bf16 or fp8 blockwise 1D scaled tensor "
-                "with compact data and scales."
+                "Fp8Padding only supports"
+                "1. mxfp8"
+                "2. blockwise 1D scaled tensor with compact data and scales."
             )
 
             in_features = inp._rowwise_data.shape[-1]
-            in_scale_features = inp._rowwise_scale_inv.T.shape[-1]
+            in_scale_features = inp._rowwise_scale_inv.shape[-1]
 
             rowwise_data = inp._rowwise_data.view(-1, in_features)
-            rowwise_scale_inv = inp._rowwise_scale_inv.T.view(-1, in_scale_features).contiguous()
+            rowwise_scale_inv = inp._rowwise_scale_inv.view(-1, in_scale_features).contiguous()
 
             out_data = torch.empty(
                 [total_row, in_features], dtype=inp._rowwise_data.dtype, device=inp.device
@@ -63,18 +65,32 @@ class _Fp8Padding(torch.autograd.Function):
             tex.fused_multi_row_padding(rowwise_data, out_data, m_splits, padded_m_splits)
             tex.fused_multi_row_padding(rowwise_scale_inv, out_scale_inv, m_splits, padded_m_splits)
 
-            out = Float8BlockwiseQTensor(
-                shape=out_data.shape,
-                dtype=inp.dtype,
-                rowwise_data=out_data,
-                rowwise_scale_inv=out_scale_inv.T.contiguous(),
-                columnwise_data=None,
-                columnwise_scale_inv=None,
-                fp8_dtype=inp._fp8_dtype,
-                quantizer=inp._get_quantizer(),
-                is_2D_scaled=False,
-                requires_grad=inp.requires_grad,
-            )
+            if isinstance(inp, MXFP8Tensor):
+                out = MXFP8Tensor(
+                    shape=out_data.shape,
+                    dtype=inp.dtype,
+                    fp8_dtype=inp._fp8_dtype,
+                    rowwise_data=out_data,
+                    rowwise_scale_inv=out_scale_inv.contiguous(),
+                    columnwise_data=None,
+                    columnwise_scale_inv=None,
+                    quantizer=inp._get_quantizer(),
+                    requires_grad=inp.requires_grad,
+                )
+            elif isinstance(inp, Float8BlockwiseQTensor):
+                out = Float8BlockwiseQTensor(
+                    shape=out_data.shape,
+                    dtype=inp.dtype,
+                    rowwise_data=out_data,
+                    rowwise_scale_inv=out_scale_inv.contiguous(),
+                    columnwise_data=None,
+                    columnwise_scale_inv=None,
+                    fp8_dtype=inp._fp8_dtype,
+                    quantizer=inp._get_quantizer(),
+                    is_2D_scaled=False,
+                    requires_grad=inp.requires_grad,
+                    data_format=tex.Float8BlockScaleTensorFormat.COMPACT,
+                )
         else:
             # Make sure input dimensions are compatible
             in_features = inp.shape[-1]

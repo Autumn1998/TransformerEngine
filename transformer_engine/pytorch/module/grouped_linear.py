@@ -117,12 +117,16 @@ class _GroupedLinear(torch.autograd.Function):
                 f"Input tensor (shape={tuple(inp.size())}) is not compatible with "
                 f"weight tensor (shape={tuple(weights[0].size())})"
             )
-        inp_view = inp.reshape(-1, in_features)
+        
         inputmats: list
         if isinstance(inp, QuantizedTensorBase):
             # If the input is a quantized tensor, split it 
             inputmats = inp.split(m_splits)
+            for inputmat in inputmats:
+                if isinstance(inputmat, Float8BlockwiseQTensorBase):
+                    inputmat._make_gemm_ready()
         else:
+            inp_view = inp.reshape(-1, in_features)
             if fp8:
                 # If the input is not quantized, quantize + split
                 inputmats = tex.split_quantize(inp_view, m_splits, input_quantizers)
@@ -305,6 +309,7 @@ class _GroupedLinear(torch.autograd.Function):
                         # If the input grad_output is quantized
                         grad_output_mats = grad_output_view.split(ctx.m_splits)
                         for grad_output_mat in grad_output_mats:
+                            grad_output_mat._make_gemm_ready()
                             # Dequantize -> transpose -> quantize
                             grad_output_mat.update_usage(rowwise_usage=True, columnwise_usage=True)
                         grad_output = grad_output_mats

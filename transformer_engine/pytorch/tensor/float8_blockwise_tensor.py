@@ -516,15 +516,23 @@ class Float8BlockwiseQTensor(Float8BlockwiseQTensorBase, QuantizedTensor):
         assert self._rowwise_data is not None, "Float8BlockwiseQTensor has no rowwise data."
 
         in_features = self._rowwise_data.shape[-1]
-        scale_in_features = self._rowwise_scale_inv.shape[0]
         rowwise_mats = torch.split(
             self._rowwise_data.view(-1, in_features), split_size_or_sections, dim=0
         )
-        rowwise_scale_inv_mats = torch.split(
-            self._rowwise_scale_inv.view(scale_in_features, -1),
-            split_size_or_sections,
-            dim=1,
-        )
+        if self._data_format == Float8BlockScaleTensorFormat.COMPACT:
+            scale_in_features = self._rowwise_scale_inv.shape[1]
+            rowwise_scale_inv_mats = torch.split(
+                self._rowwise_scale_inv.view(-1, scale_in_features),
+                split_size_or_sections,
+                dim=0,
+            )
+        else:
+            scale_in_features = self._rowwise_scale_inv.shape[0]
+            rowwise_scale_inv_mats = torch.split(
+                self._rowwise_scale_inv.view(scale_in_features, -1),
+                split_size_or_sections,
+                dim=1,
+            )
         
         columnwise_mats = [None] * len(rowwise_mats)
         columnwise_scale_inv_mats = [None] * len(rowwise_mats)
@@ -533,11 +541,18 @@ class Float8BlockwiseQTensor(Float8BlockwiseQTensorBase, QuantizedTensor):
             columnwise_mats = torch.split(
                 self._columnwise_data.view(in_features, -1), split_size_or_sections, dim=1
             )
-            columnwise_scale_inv_mats = torch.split(
-                self._columnwise_scale_inv.view(-1, scale_in_features),
-                split_size_or_sections,
-                dim=0,
-            )
+            if self._data_format == Float8BlockScaleTensorFormat.COMPACT:
+                columnwise_scale_inv_mats = torch.split(
+                    self._columnwise_scale_inv.view(scale_in_features, -1),
+                    split_size_or_sections,
+                    dim=1,
+                )
+            else:
+                columnwise_scale_inv_mats = torch.split(
+                    self._columnwise_scale_inv.view(-1, scale_in_features),
+                    split_size_or_sections,
+                    dim=0,
+                )
 
         return [
             Float8BlockwiseQTensor(
@@ -551,6 +566,7 @@ class Float8BlockwiseQTensor(Float8BlockwiseQTensorBase, QuantizedTensor):
                 quantizer=self._get_quantizer(),
                 is_2D_scaled=self._is_2D_scaled,
                 requires_grad=self.requires_grad,
+                data_format=self._data_format,
             )
             for mat, scale_inv_mat, columnwise_mat, columnwise_scale_inv_mat in zip(rowwise_mats, rowwise_scale_inv_mats, columnwise_mats, columnwise_scale_inv_mats)
         ]
@@ -661,6 +677,22 @@ class Float8BlockwiseQTensor(Float8BlockwiseQTensorBase, QuantizedTensor):
     data = property(_get_data, _set_data)
 
 
+    def _make_gemm_ready(self):
+        """
+        Make the tensor in GEMM_READY format.
+        """
+        if self._data_format == Float8BlockScaleTensorFormat.GEMM_READY:
+            return
+        
+        # Update the data format
+        self._data_format = Float8BlockScaleTensorFormat.GEMM_READY
+        # Transpose the scale inv for GEMM input
+        if self._rowwise_data is not None and self._rowwise_scale_inv is not None:
+            self._rowwise_scale_inv = self._rowwise_scale_inv.T.contiguous()
+        if self._columnwise_data is not None and self._columnwise_scale_inv is not None:
+            self._columnwise_scale_inv = self._columnwise_scale_inv.T.contiguous()
+
+
 class _ViewFunc(torch.autograd.Function):
     """View function
 
@@ -677,10 +709,9 @@ class _ViewFunc(torch.autograd.Function):
         # pylint: disable=missing-function-docstring
 
         # Check for invalid configurations
-        if not tensor._is_gemm_ready_format():
+        if tensor._is_gemm_ready_format() and tensor._is_2D_scaled:
             raise NotImplementedError(
-                "View is only supported with GEMM_READY data format, "
-                f"but found data_format={tensor._data_format}"
+                "View operation is not supported for 2D scaled tensor in GEMM_READY format"
             )
 
         # Return input tensor if shape is not provided
