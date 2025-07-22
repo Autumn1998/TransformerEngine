@@ -270,6 +270,62 @@ class MXFP8Tensor(MXFP8TensorBase, QuantizedTensor):
         # pylint: disable=missing-function-docstring
         return _ReshapeFunc.apply(self, shape)
 
+    def record_stream(self, stream):
+        if self._rowwise_data is not None:
+            self._rowwise_data.record_stream(stream)
+        if self._rowwise_scale_inv is not None:
+            self._rowwise_scale_inv.record_stream(stream)
+        if self._columnwise_data is not None:
+            self._columnwise_data.record_stream(stream)
+        if self._columnwise_scale_inv is not None:
+            self._columnwise_scale_inv.record_stream(stream)
+    
+
+    def clear(self):
+        """Deallocate this tensor's memory. Typically not needed and must be used carefully."""
+        self._rowwise_data = torch.Tensor() if self._rowwise_data is not None else None
+        self._columnwise_data = torch.Tensor() if self._columnwise_data is not None else None
+    
+    def split(self, split_size_or_sections):
+        """Splits the tensor into chunks."""
+        assert self._rowwise_data is not None, "MXFP8Tensor has no rowwise data."
+
+        in_features = self._rowwise_data.shape[-1]
+        scale_in_features = self._rowwise_scale_inv.shape[1]
+
+        rowwise_mats = torch.split(
+            self._rowwise_data.view(-1, in_features), split_size_or_sections, dim=0
+        )
+        rowwise_scale_inv_mats = torch.split(
+            self._rowwise_scale_inv.view(-1, scale_in_features),
+            split_size_or_sections,
+            dim=0,
+        )
+
+        columnwise_mats = torch.split(
+            self._columnwise_data.view(in_features, -1), split_size_or_sections, dim=1
+        )
+        columnwise_scale_inv_mats = torch.split(
+            self._columnwise_scale_inv.view(scale_in_features, -1),
+            split_size_or_sections,
+            dim=1,
+        )
+
+        return [
+            MXFP8Tensor(
+                shape=mat.shape,
+                dtype=self.dtype,
+                rowwise_data=mat,
+                rowwise_scale_inv=scale_inv_mat.contiguous(),
+                columnwise_data=columnwise_mat.contiguous() if columnwise_mat is not None else None,
+                columnwise_scale_inv=columnwise_scale_inv_mat.contiguous() if columnwise_scale_inv_mat is not None else None,
+                fp8_dtype=self._fp8_dtype,
+                quantizer=self._get_quantizer(),
+                requires_grad=self.requires_grad,
+            )
+            for mat, scale_inv_mat, columnwise_mat, columnwise_scale_inv_mat in zip(rowwise_mats, rowwise_scale_inv_mats, columnwise_mats, columnwise_scale_inv_mats)
+        ]
+
     def contiguous(
         self,
         memory_format: torch.memory_format = torch.contiguous_format,

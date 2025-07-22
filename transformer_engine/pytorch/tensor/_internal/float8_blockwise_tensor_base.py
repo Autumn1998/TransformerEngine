@@ -310,7 +310,7 @@ class Float8BlockwiseQTensorBase(QuantizedTensorBase):
 
     def _create_columnwise(self):
         """
-        Update columnwise data and columnwise scale inv. Can only be used when using 2D scaling.
+        Update columnwise data and columnwise scale inv. 
         """
         if self._is_2D_scaled:
             rowwise_data = self._rowwise_data
@@ -356,7 +356,7 @@ class Float8BlockwiseQTensorBase(QuantizedTensorBase):
                 dtype=self._rowwise_scale_inv.dtype,
                 device=self._rowwise_scale_inv.device,
             )
-            tex.fp8_blockwise_transpose(self, self._quantizer)
+            tex.blockwise_dq_cast_transpose(self, self._quantizer)
 
     def _transpose_columnwise_data(self):
         """Plainly transpose the columnwise data and scale inv."""
@@ -394,23 +394,12 @@ class Float8BlockwiseQTensorBase(QuantizedTensorBase):
         ), "Must retain some data either columnwise or rowwise"
 
         if columnwise_usage and rowwise_usage:
-            if not self._is_2D_scaled:
-                # For 1D scaling, we cannot create columnwise data/scale_inv from rowwise
-                # data/scale_inv because their scale values are different.
-                assert (
-                    self._rowwise_data is not None
-                    and self._rowwise_scale_inv is not None
-                    and self._columnwise_data is not None
-                    and self._columnwise_scale_inv is not None
-                ), "Cannot update to rowwise and columnwise usage."
-            else:
-                # For 2D scaling, if columnwise data/scale_inv is None, we can create them from
-                # rowwise data/scale_inv.
-                assert (
-                    self._rowwise_data is not None and self._rowwise_scale_inv is not None
-                ), "Cannot update to rowwise and columnwise usage because rowwise data is None."
-                if self._columnwise_data is None or self._columnwise_scale_inv is None:
-                    self._create_columnwise()
+            # If columnwise data/scale_inv is None, we can create them from rowwise data/scale_inv.
+            assert (
+                self._rowwise_data is not None and self._rowwise_scale_inv is not None
+            ), "Cannot update to rowwise and columnwise usage because rowwise data is None."
+            if self._columnwise_data is None or self._columnwise_scale_inv is None:
+                self._create_columnwise()
             return
 
         if rowwise_usage:

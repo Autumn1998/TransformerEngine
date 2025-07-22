@@ -207,8 +207,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "Split and multi-tensor quantize", py::arg("tensor"), py::arg("split_sections"),
         py::arg("quantizer_list"));
 
-  m.def("fp8_blockwise_transpose", &transformer_engine::pytorch::fp8_blockwise_transpose,
+  m.def("blockwise_dq_cast_transpose", &transformer_engine::pytorch::blockwise_dq_cast_transpose,
         "Blockwise Transpose with dequantize + cast + transpose", py::arg("tensor"), py::arg("quantizer"));
+  m.def("mxfp8_dq_cast_transpose", &transformer_engine::pytorch::mxfp8_dq_cast_transpose,
+        "MXFP8 Transpose with dequantize + cast + transpose", py::arg("tensor"), py::arg("quantizer"));
   m.def("te_general_grouped_gemm", &transformer_engine::pytorch::te_general_grouped_gemm,
         "Grouped GEMM");
   m.def("fp8_transpose", &transformer_engine::pytorch::fp8_transpose, "Transpose with FP8 I/O",

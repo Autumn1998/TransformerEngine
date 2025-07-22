@@ -72,7 +72,7 @@ def test_dequantize_cast_transpose(
         return x_casted._rowwise_data, x_casted._rowwise_scale_inv
     res_base_data, res_base_scale_inv = dequantize_cast_transpose_naive(x_fp8_base, quantizer)
     # Fused implementation
-    res_ref = tex.fp8_blockwise_transpose(x_fp8_ref, quantizer)
+    res_ref = tex.blockwise_dq_cast_transpose(x_fp8_ref, quantizer)
     res_ref_data, res_ref_scale_inv = res_ref._columnwise_data, res_ref._columnwise_scale_inv
 
     # Check results
@@ -132,7 +132,7 @@ def test_dequantize_cast_transpose(
 
 #     # Fused implementation
 #     quantizer.update_quantized(x_ref, x_fp8_ref)
-#     res_ref = tex.fp8_blockwise_transpose(x_fp8_ref, quantizer)
+#     res_ref = tex.blockwise_dq_cast_transpose(x_fp8_ref, quantizer)
 #     res_ref_data, res_ref_scale_inv = res_ref._columnwise_data, res_ref._columnwise_scale_inv
 
 #     # Check results

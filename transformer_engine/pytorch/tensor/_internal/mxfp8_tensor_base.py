@@ -222,6 +222,14 @@ class MXFP8TensorBase(QuantizedTensorBase):
         if columnwise_usage is None:
             columnwise_usage = self._columnwise_data is not None
 
+        if columnwise_usage and rowwise_usage:
+            assert (
+                self._rowwise_data is not None and self._rowwise_scale_inv is not None
+            ), "Cannot update to rowwise and columnwise usage because rowwise data is None."
+            if self._columnwise_data is None or self._columnwise_scale_inv is None:
+                self._create_columnwise()
+            return
+
         # Update row-scaled data
         if rowwise_usage:
             if self._rowwise_data is None:
@@ -250,3 +258,23 @@ class MXFP8TensorBase(QuantizedTensorBase):
         else:
             self._columnwise_data = None
             self._columnwise_scale_inv = None
+
+    def _create_columnwise(self):
+        """
+        Update columnwise data and columnwise scale inv.
+        """
+        self._rowwise_data = self._rowwise_data.contiguous()
+        rowwise_shape = self._rowwise_data.reshape(-1, self._rowwise_data.shape[-1]).shape
+        columnwise_shape = (rowwise_shape[-1], rowwise_shape[0])
+        columnwise_scale_inv_shape = self._quantizer.get_scale_shape(columnwise_shape, False)
+        self._columnwise_data = torch.empty(
+            columnwise_shape,
+            dtype=self._rowwise_data.dtype,
+            device=self._rowwise_data.device,
+        )
+        self._columnwise_scale_inv = torch.empty(
+            columnwise_scale_inv_shape,
+            dtype=self._rowwise_scale_inv.dtype,
+            device=self._rowwise_scale_inv.device,
+        )
+        tex.mxfp8_dq_cast_transpose(self, self._quantizer)

@@ -44,7 +44,7 @@ at::Tensor fp8_transpose(at::Tensor input, DType otype, std::optional<at::Tensor
   return out;
 }
 
-py::object fp8_blockwise_transpose(py::object tensor, py::object quantizer) {
+py::object blockwise_dq_cast_transpose(py::object tensor, py::object quantizer) {
   init_extension();
   // Basic checks
   NVTE_CHECK(!tensor.is_none(), "Tensor has not been provided");
@@ -89,6 +89,47 @@ py::object fp8_blockwise_transpose(py::object tensor, py::object quantizer) {
 
   return tensor;
 }
+
+py::object mxfp8_dq_cast_transpose(py::object tensor, py::object quantizer) {
+  init_extension();
+  // Basic checks
+  NVTE_CHECK(!tensor.is_none(), "Tensor has not been provided");
+  NVTE_CHECK(detail::IsMXFP8Quantizers(quantizer.ptr()),
+             "Quantizer must be a MXFP8Quantizer");
+
+  // Get intermediate dtype
+  torch::Tensor torch_tensor = py::cast<torch::Tensor>(tensor);
+  auto torch_dtype = torch_tensor.scalar_type();
+  auto te_dtype = DType::kBFloat16;
+  switch (torch_dtype) {
+      case c10::ScalarType::Float:
+          te_dtype = DType::kFloat32;
+          break;  
+      case c10::ScalarType::Half:
+          te_dtype = DType::kFloat16;
+          break;
+      case c10::ScalarType::BFloat16:
+          te_dtype = DType::kBFloat16;
+          break;
+      default:
+          NVTE_ERROR("Unsupported dtype");
+  }
+
+  // Create TE tensor
+  TensorWrapper te_tensor = makeTransformerEngineTensor(tensor, quantizer);
+
+  // Create Quantizer
+  auto my_quantizer = static_cast<MXFP8Quantizer*>(convert_quantizer(quantizer).get());
+
+  // Create QuantizationConfig
+  QuantizationConfigWrapper quant_config;
+
+  // Launch TE kernel
+  nvte_transpose_mxfp8(te_tensor.data(), quant_config, te_dtype, at::cuda::getCurrentCUDAStream());
+
+  return tensor;
+}
+
 
 }  // namespace pytorch
 }  // namespace transformer_engine

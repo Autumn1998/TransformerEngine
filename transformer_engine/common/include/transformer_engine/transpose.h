@@ -330,6 +330,17 @@ void nvte_dsreglu_cast_transpose(const NVTETensor input, const NVTETensor act_in
 void nvte_transpose_blockwise(NVTETensor tensor, const NVTEQuantizationConfig quant_config,
                               transformer_engine::DType intermediate_dtype, cudaStream_t stream);
 
+/*! \brief Dequantize the rowwise input, then transpose the result and cast it to fp8 in rowwise.
+ *
+ *  \param[in,out]  tensor              Input and output tensor.
+ *                                      Shape of rowwise data: [N, H].
+ *                                      Shape of columnwise data: [H, N].
+ *  \param[in]      quant_config        Quantization configuration.
+ *  \param[in]      intermediate_dtype  Intermediate dtype. Target dtype of the dequantization.
+ *  \param[in]      stream              CUDA stream used for the operation.
+*/
+void nvte_transpose_mxfp8(NVTETensor tensor, const NVTEQuantizationConfig quant_config,
+                              transformer_engine::DType intermediate_dtype, cudaStream_t stream);
 #ifdef __cplusplus
 }  // extern "C"
 #endif
