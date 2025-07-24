@@ -240,6 +240,7 @@ __global__ void dequantize_cast_transpose_1x128_kernel(FP8_TYPE *input, float *i
   }
 }
 
+
 // scaling dim = 32
 // scaling type = int
 // - tile shape for each block: 32x32
@@ -254,7 +255,7 @@ __global__ void dequantize_cast_transpose_1x128_kernel(FP8_TYPE *input, float *i
 // 2. seq_len % 4 == 0     # use float to load fp8
 template <typename FP8_TYPE, typename RAW_TYPE>
 __global__ void dequantize_cast_transpose_1x32_aligned_kernel(
-    FP8_TYPE *input, float *input_scale_inv, FP8_TYPE *output, float *output_scale_inv,
+    FP8_TYPE *input, e8m0_t *input_scale_inv, FP8_TYPE *output, e8m0_t *output_scale_inv,
     const size_t hidden_dim, const size_t seq_len, const size_t scale_dim, const size_t scale_output_dim, const float epsilon) {
   // define the meta
   auto warp_id = threadIdx.x / kThreadsPerWarp;
@@ -265,7 +266,7 @@ __global__ void dequantize_cast_transpose_1x32_aligned_kernel(
   auto block_offset_x = blockIdx.x * kTileDim;
   auto block_offset_y = blockIdx.y * kTileDim;
   __shared__ float smem_float_tile[kTileDim][kTileDim / 4 + 1];
-  __shared__ float smem_scale_inv[kTileDim];
+  __shared__ e8m0_t smem_scale_inv[kTileDim];
 
   // Load the scale to shared memory
   for (auto i = threadIdx.x; i < kTileDim; i += blockDim.x) {
@@ -273,7 +274,6 @@ __global__ void dequantize_cast_transpose_1x32_aligned_kernel(
                         ? input_scale_inv[(block_offset_x + i) * scale_dim + blockIdx.y]
                         : epsilon;
   }
-  __syncthreads();
 
   // Each thread will process 4x4 mitrix
   // Each 8-threads will process 4x32 matrix
@@ -311,21 +311,22 @@ __global__ void dequantize_cast_transpose_1x32_aligned_kernel(
   }
   __syncthreads();
 
-  float old_scale = smem_scale_inv[lane_id];
+  e8m0_t old_scale = smem_scale_inv[lane_id];
   RAW_TYPE dequantized;
   for (auto w = warp_id; w < kTileDim; w += warp_num) {
     // 4. Dequantize the fp8 activation on the smem, then compute the new scaling factor on a row
     auto transposed = reinterpret_cast<FP8_TYPE *>(smem_float_tile[w]);
     dequantized = float(transposed[lane_id]) * old_scale;
     float max_val = warp_max_reduce_on_float(dequantized);
-    float new_scale = compute_scale_from_types<float, FP8_TYPE>(max_val, epsilon, true);  
-
+    float new_scale_inv = float_to_e8m0(max_val * Quantized_Limits<FP8_TYPE>::max_norm_rcp);  
+    auto scale = exp2f_rcp(new_scale_inv);
+    
     // 5. Re quantize the fp8 tile on smem
-    transposed[lane_id] = FP8_TYPE(float(dequantized) * new_scale);
+    transposed[lane_id] = FP8_TYPE(float(dequantized) * scale);
     // Store the new scaling factor to the shared memory
     __syncwarp();
     if(lane_id == 0){
-        smem_scale_inv[w] = 1.0f / new_scale;
+        smem_scale_inv[w] = new_scale_inv;
     }
   }
   __syncthreads();
@@ -349,8 +350,8 @@ __global__ void dequantize_cast_transpose_1x32_aligned_kernel(
 }
 
 template <typename FP8_TYPE, typename RAW_TYPE>
-__global__ void dequantize_cast_transpose_1x32_kernel(FP8_TYPE *input, float *input_scale_inv,
-                                                       FP8_TYPE *output, float *output_scale_inv,
+__global__ void dequantize_cast_transpose_1x32_kernel(FP8_TYPE *input, e8m0_t *input_scale_inv,
+                                                       FP8_TYPE *output, e8m0_t *output_scale_inv,
                                                        const size_t hidden_dim, const size_t seq_len, 
                                                        const size_t scale_dim, const size_t scale_output_dim, const float epsilon) {
   auto warp_id = threadIdx.x / kThreadsPerWarp;
@@ -358,7 +359,7 @@ __global__ void dequantize_cast_transpose_1x32_kernel(FP8_TYPE *input, float *in
   auto warp_num = blockDim.x / kThreadsPerWarp;
   auto block_offset_x = blockIdx.x * kTileDim;
   auto block_offset_y = blockIdx.y * kTileDim;
-  __shared__ float smem_scale_inv[kTileDim];
+  __shared__ e8m0_t smem_scale_inv[kTileDim];
   __shared__ FP8_TYPE transposed[kTileDim][kTileDim + 4];
   // 1. load the scale from global memory
   for (auto i = threadIdx.x; i < kTileDim; i += blockDim.x) {
@@ -379,20 +380,21 @@ __global__ void dequantize_cast_transpose_1x32_kernel(FP8_TYPE *input, float *in
   }
   __syncthreads();
 
-  float scale_old = smem_scale_inv[lane_id];
+  e8m0_t scale_old = smem_scale_inv[lane_id];
   RAW_TYPE dequantized;
   for (auto w = warp_id; w < kTileDim; w += warp_num) {
     // 3. Dequantize the fp8 activation on the smem, then compute the new scaling factor on a row
     dequantized = float(transposed[w][lane_id]) * scale_old;
     float max_val = warp_max_reduce_on_float(dequantized);
-    float new_scale = compute_scale_from_types<float, FP8_TYPE>(max_val, epsilon, true);  
+    float new_scale_inv = float_to_e8m0(max_val * Quantized_Limits<FP8_TYPE>::max_norm_rcp);  
+    auto scale = exp2f_rcp(new_scale_inv);
 
     // 4. Re quantize the fp8 tile on smem
-    transposed[w][lane_id] = FP8_TYPE(float(dequantized) * new_scale);
+    transposed[w][lane_id] = FP8_TYPE(float(dequantized) * scale);
     // Store the new scaling factor to the shared memory
     __syncwarp();
     if(lane_id == 0){
-        smem_scale_inv[w] = 1.0f / new_scale;
+        smem_scale_inv[w] = new_scale_inv;
     }
   }
   __syncthreads();
@@ -557,9 +559,9 @@ void nvte_transpose_mxfp8(NVTETensor tensor, const NVTEQuantizationConfig quant_
           itype, FP8_TYPE,
           dequantize_cast_transpose_1x32_aligned_kernel<FP8_TYPE, RAW_TYPE>
           <<<grid, block, 0, stream>>>(reinterpret_cast<FP8_TYPE *>(rowwise_data.dptr),
-                                      reinterpret_cast<float *>(rowwise_scale_inv.dptr),
+                                      reinterpret_cast<e8m0_t *>(rowwise_scale_inv.dptr),
                                       reinterpret_cast<FP8_TYPE *>(colwise_data.dptr),
-                                      reinterpret_cast<float *>(colwise_scale_inv.dptr), hidden_dim,
+                                      reinterpret_cast<e8m0_t *>(colwise_scale_inv.dptr), hidden_dim,
                                       seq_len, scale_dim, scale_output_dim, epsilon);
       );
     );
@@ -570,9 +572,9 @@ void nvte_transpose_mxfp8(NVTETensor tensor, const NVTEQuantizationConfig quant_
           itype, FP8_TYPE,
           dequantize_cast_transpose_1x32_kernel<FP8_TYPE, RAW_TYPE>
           <<<grid, block, 0, stream>>>(reinterpret_cast<FP8_TYPE *>(rowwise_data.dptr),
-                                      reinterpret_cast<float *>(rowwise_scale_inv.dptr),
+                                      reinterpret_cast<e8m0_t *>(rowwise_scale_inv.dptr),
                                       reinterpret_cast<FP8_TYPE *>(colwise_data.dptr),
-                                      reinterpret_cast<float *>(colwise_scale_inv.dptr), hidden_dim,
+                                      reinterpret_cast<e8m0_t *>(colwise_scale_inv.dptr), hidden_dim,
                                       seq_len, scale_dim, scale_output_dim, epsilon);
       );
     );
