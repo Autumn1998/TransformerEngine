@@ -27,21 +27,24 @@ class _Fp8Unpadding(torch.autograd.Function):
         ctx,
         inp: torch.Tensor,
         m_splits: List[int],
-        padded_m_splits: List[int],
+        padded_m_splits: Optional[List[int]],
+        padded_scale_splits: Optional[List[int]],
         is_grad_enabled: bool,
     ) -> torch.Tensor:
-        # pylint: disable=missing-function-docstring
-        in_features = inp.shape[-1]
+        if padded_m_splits is not None:
+            # pylint: disable=missing-function-docstring
+            in_features = inp.shape[-1]
 
-        # Allocate cast and transpose output tensor
-        total_row = sum(m_splits)
-        out_ret = torch.empty([total_row, in_features], dtype=inp.dtype, device=inp.device)
+            # Allocate cast and transpose output tensor
+            total_row = sum(m_splits)
+            out_ret = torch.empty([total_row, in_features], dtype=inp.dtype, device=inp.device)
 
-        tex.fused_multi_row_unpadding(inp.view(-1, in_features), out_ret, padded_m_splits, m_splits)
+            tex.fused_multi_row_unpadding(inp.view(-1, in_features), out_ret, padded_m_splits, m_splits)
 
         if is_grad_enabled:
             ctx.m_splits = m_splits
             ctx.padded_m_splits = padded_m_splits
+            ctx.padded_scale_splits = padded_scale_splits
             ctx.requires_dgrad = inp.requires_grad
 
         return out_ret
@@ -52,7 +55,6 @@ class _Fp8Unpadding(torch.autograd.Function):
         grad_input = None
         if ctx.requires_dgrad:
             grad_output = grad_output.contiguous()
-            total_row = sum(ctx.padded_m_splits)
 
             if isinstance(grad_output, QuantizedTensor):
                 # Each m in m_splits indicates a tensor. So for tensor-wise scaled tensors,
@@ -67,31 +69,38 @@ class _Fp8Unpadding(torch.autograd.Function):
                     "2. blockwise 1D scaled tensor with compact data and scales."
                 )
 
-                in_features = grad_output._rowwise_data.shape[-1]
-                in_scale_features = grad_output._rowwise_scale_inv.shape[-1]
-            
-                rowwise_data = grad_output._rowwise_data.view(-1, in_features)
-                rowwise_scale_inv = grad_output._rowwise_scale_inv.view(
-                    -1, in_scale_features
-                ).contiguous()
+                if ctx.padded_m_splits is not None:
+                    total_row = sum(ctx.padded_m_splits)
+                    in_features = grad_output._rowwise_data.shape[-1]
+                    rowwise_data = grad_output._rowwise_data.view(-1, in_features)
+                    grad_input_data = torch.empty(
+                        [total_row, in_features],
+                        dtype=grad_output._rowwise_data.dtype,
+                        device=grad_output.device,
+                    )
+                    tex.fused_multi_row_padding(
+                        rowwise_data, grad_input_data, ctx.m_splits, ctx.padded_m_splits
+                    )
+                else:
+                    rowwise_data = grad_output._rowwise_data
 
-                grad_input_data = torch.empty(
-                    [total_row, in_features],
-                    dtype=grad_output._rowwise_data.dtype,
-                    device=grad_output.device,
-                )
-                grad_input_scale = torch.empty(
-                    [total_row, in_scale_features],
-                    dtype=grad_output._rowwise_scale_inv.dtype,
-                    device=grad_output.device,
-                )
+                if ctx.padded_scale_splits is not None:
+                    total_row = sum(ctx.padded_scale_splits)
+                    in_scale_features = grad_output._rowwise_scale_inv.shape[-1]
+                    rowwise_scale_inv = grad_output._rowwise_scale_inv.view(
+                        -1, in_scale_features
+                    ).contiguous()
+                    grad_input_scale = torch.empty(
+                        [total_row, in_scale_features],
+                        dtype=grad_output._rowwise_scale_inv.dtype,
+                        device=grad_output.device,
+                    )
+                    tex.fused_multi_row_padding(
+                        rowwise_scale_inv, grad_input_scale, ctx.m_splits, ctx.padded_scale_splits
+                    )
+                else:
+                    rowwise_scale_inv = grad_output._rowwise_scale_inv
 
-                tex.fused_multi_row_padding(
-                    rowwise_data, grad_input_data, ctx.m_splits, ctx.padded_m_splits
-                )
-                tex.fused_multi_row_padding(
-                    rowwise_scale_inv, grad_input_scale, ctx.m_splits, ctx.padded_m_splits
-                )
 
                 if isinstance(grad_output, MXFP8Tensor):
                     grad_input = MXFP8Tensor(
@@ -120,17 +129,17 @@ class _Fp8Unpadding(torch.autograd.Function):
                         data_format=tex.Float8BlockScaleTensorFormat.COMPACT,
                     )
             else:
-                in_features = grad_output.shape[-1]
-
-                # Allocate cast and transpose output tensor
-                total_row = sum(ctx.padded_m_splits)
-                grad_input = torch.empty(
-                    [total_row, in_features], dtype=grad_output.dtype, device=grad_output.device
-                )
-                # FP8 pad input for forward, FP8 input transpose for backward wgrad
-                tex.fused_multi_row_padding(
-                    grad_output.view(-1, in_features), grad_input, ctx.m_splits, ctx.padded_m_splits
-                )
+                if ctx.padded_m_splits is not None:
+                    in_features = grad_output.shape[-1]
+                    # Allocate cast and transpose output tensor
+                    total_row = sum(ctx.padded_m_splits)
+                    grad_input = torch.empty(
+                        [total_row, in_features], dtype=grad_output.dtype, device=grad_output.device
+                    )
+                    # FP8 pad input for forward, FP8 input transpose for backward wgrad
+                    tex.fused_multi_row_padding(
+                        grad_output.view(-1, in_features), grad_input, ctx.m_splits, ctx.padded_m_splits
+                    )
 
         return (grad_input, None, None, None)
 
@@ -153,11 +162,13 @@ class Fp8Unpadding(torch.nn.Module):
         self,
         num_gemms: int,
         align_size: Optional[int] = None,
+        scale_align_size: Optional[int] = None,
     ) -> None:
         super().__init__()
 
         self.num_gemms = num_gemms
         self.align_size = align_size
+        self.scale_align_size = scale_align_size
 
     @no_torch_dynamo()
     def forward(
@@ -179,13 +190,18 @@ class Fp8Unpadding(torch.nn.Module):
         assert len(m_splits) == self.num_gemms, "Number of splits should match number of GEMMs."
         if self.align_size is None:
             self.align_size = 32 if FP8GlobalStateManager.get_fp8_recipe().mxfp8() else 16
+        if self.scale_align_size is None:
+            self.scale_align_size = 128 if FP8GlobalStateManager.get_fp8_recipe().mxfp8() else self.align_size
 
         # FP8 padding calculate
         padded_m_splits = [
             (m + self.align_size - 1) // self.align_size * self.align_size for m in m_splits
         ]
+        padded_scale_splits = [
+            (m + self.scale_align_size - 1) // self.scale_align_size * self.scale_align_size for m in m_splits
+        ]
         # no padding needed
-        if m_splits == padded_m_splits:
+        if m_splits == padded_m_splits and m_splits == padded_scale_splits:
             return inp
 
         if torch.is_grad_enabled():
@@ -198,7 +214,8 @@ class Fp8Unpadding(torch.nn.Module):
         args += (
             inp,
             m_splits,
-            padded_m_splits,
+            padded_m_splits if m_splits != padded_m_splits else None,
+            padded_scale_splits if m_splits != padded_scale_splits else None,
             torch.is_grad_enabled(),
         )
         out = fn(*args)
