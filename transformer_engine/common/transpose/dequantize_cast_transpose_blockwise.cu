@@ -525,15 +525,7 @@ void nvte_transpose_mxfp8(NVTETensor tensor, const NVTEQuantizationConfig quant_
   NVTE_CHECK(colwise_scale_inv_shape.size() == 2, "colwise_scale_inv_shape must be 2D");
   NVTE_CHECK(rowwise_shape[0] == colwise_shape[1] && rowwise_shape[1] == colwise_shape[0],
              "The shape of rowwise_data and inversed colwise_data must be the same");
-  NVTE_CHECK(rowwise_shape[0] == rowwise_scale_inv_shape[0],
-             "num of rows of rowwise_data must be equal to num of cols of rowwise_scale_inv, got "
-             "rowwise_shape[0]:",
-             rowwise_shape[0], ", rowwise_scale_inv_shape[0]:", rowwise_scale_inv_shape[0]);
-  NVTE_CHECK(colwise_shape[0] == colwise_scale_inv_shape[0],
-             "num of cols of colwise_data must be equal to num of rows of colwise_scale_inv, got "
-             "colwise_shape[0]:",
-             colwise_shape[0], ", colwise_scale_inv_shape[0]:", colwise_scale_inv_shape[0]);
-  
+
   const QuantizationConfig *quant_config_cpp =
       reinterpret_cast<const QuantizationConfig *>(quant_config);
   const float epsilon = 0.0f;

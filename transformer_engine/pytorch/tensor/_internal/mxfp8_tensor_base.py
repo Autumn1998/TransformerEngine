@@ -266,7 +266,10 @@ class MXFP8TensorBase(QuantizedTensorBase):
         self._rowwise_data = self._rowwise_data.contiguous()
         rowwise_shape = self._rowwise_data.reshape(-1, self._rowwise_data.shape[-1]).shape
         columnwise_shape = (rowwise_shape[-1], rowwise_shape[0])
-        columnwise_scale_inv_shape = self._quantizer.get_scale_shape(columnwise_shape, False)
+        columnwise_scale_inv_shape = (
+            (rowwise_shape[-1] + 128 - 1) // 128 * 128,
+            (rowwise_shape[0] + 32 - 1) // 32,
+        )
         self._columnwise_data = torch.empty(
             columnwise_shape,
             dtype=self._rowwise_data.dtype,
