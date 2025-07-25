@@ -124,7 +124,7 @@ class _GroupedLinear(torch.autograd.Function):
             inputmats = inp.split(m_splits)
             for inputmat in inputmats:
                 if isinstance(inputmat, Float8BlockwiseQTensorBase):
-                    inputmat._make_gemm_ready()
+                    inputmat._make_tensor_gemm_ready()
         else:
             inp_view = inp.reshape(-1, in_features)
             if fp8:
@@ -309,7 +309,7 @@ class _GroupedLinear(torch.autograd.Function):
                         # If the input grad_output is quantized
                         grad_output_mats = grad_output_view.split(ctx.m_splits)
                         for grad_output_mat in grad_output_mats:
-                            grad_output_mat._make_gemm_ready()
+                            grad_output_mat._make_tensor_gemm_ready()
                             # Dequantize -> transpose -> quantize
                             grad_output_mat.update_usage(rowwise_usage=True, columnwise_usage=True)
                         grad_output = grad_output_mats

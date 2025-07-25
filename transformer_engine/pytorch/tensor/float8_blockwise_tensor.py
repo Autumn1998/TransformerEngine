@@ -636,7 +636,7 @@ class Float8BlockwiseQTensor(Float8BlockwiseQTensorBase, QuantizedTensor):
     data = property(_get_data, _set_data)
 
 
-    def _make_gemm_ready(self):
+    def _make_tensor_gemm_ready(self):
         """
         Make the tensor in GEMM_READY format.
         """

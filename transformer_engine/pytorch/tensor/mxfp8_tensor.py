@@ -302,14 +302,17 @@ class MXFP8Tensor(MXFP8TensorBase, QuantizedTensor):
             dim=0,
         )
 
-        columnwise_mats = torch.split(
-            self._columnwise_data.view(in_features, -1), split_size_or_sections, dim=1
-        )
-        columnwise_scale_inv_mats = torch.split(
-            self._columnwise_scale_inv.view(scale_in_features, -1),
-            split_size_or_sections,
-            dim=1,
-        )
+        columnwise_mats = [None] * len(rowwise_mats)
+        columnwise_scale_inv_mats = [None] * len(rowwise_mats)
+        if self._columnwise_data is not None and self._columnwise_scale_inv is not None:
+            columnwise_mats = torch.split(
+                self._columnwise_data.view(in_features, -1), split_size_or_sections, dim=1
+            )
+            columnwise_scale_inv_mats = torch.split(
+                self._columnwise_scale_inv.view(scale_in_features, -1),
+                split_size_or_sections,
+                dim=1,
+            )
 
         return [
             MXFP8Tensor(
