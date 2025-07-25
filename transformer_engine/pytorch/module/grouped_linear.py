@@ -172,27 +172,6 @@ class _GroupedLinear(torch.autograd.Function):
             if hasattr(recipe, "fp8_gemm_fprop"):
                 use_split_accumulator = recipe.fp8_gemm_fprop.use_split_accumulator
 
-        if torch.distributed.get_rank() == 0:
-            for i in range(num_gemms):
-                if weights_fp8[i]._rowwise_data is not None:
-                    print("weights_fp8[%d]._rowwise_data: " % i, weights_fp8[i]._rowwise_data.shape)
-                if weights_fp8[i]._columnwise_data is not None:
-                    print("weights_fp8[%d]._columnwise_data: " % i, weights_fp8[i]._columnwise_data.shape)
-                if weights_fp8[i]._rowwise_scale_inv is not None:
-                    print("weights_fp8[%d]._rowwise_scale_inv: " % i, weights_fp8[i]._rowwise_scale_inv.shape)
-                if weights_fp8[i]._columnwise_scale_inv is not None:
-                    print("weights_fp8[%d]._columnwise_scale_inv: " % i, weights_fp8[i]._columnwise_scale_inv.shape)
-                if inputmats[i]._rowwise_data is not None:
-                    print("inputmats[%d]._rowwise_data: " % i, inputmats[i]._rowwise_data.shape)
-                if inputmats[i]._columnwise_data is not None:
-                    print("inputmats[%d]._columnwise_data: " % i, inputmats[i]._columnwise_data.shape)
-                if inputmats[i]._rowwise_scale_inv is not None:
-                    print("inputmats[%d]._rowwise_scale_inv: " % i, inputmats[i]._rowwise_scale_inv.shape)
-                if inputmats[i]._columnwise_scale_inv is not None:
-                    print("inputmats[%d]._columnwise_scale_inv: " % i, inputmats[i]._columnwise_scale_inv.shape)
-                if out is not None:
-                    print("out: ", out.shape)
-
         # Perform GEMM
         _ = general_grouped_gemm(
             weights_fp8,
@@ -377,6 +356,31 @@ class _GroupedLinear(torch.autograd.Function):
                             rowwise_usage=quantizer.rowwise_usage,
                             columnwise_usage=quantizer.columnwise_usage,
                         )
+                if torch.distributed.get_rank() == 0:
+                    for i in range(ctx.num_gemms):
+                        if weights[i]._rowwise_data is not None:
+                            print("weights[%d]._rowwise_data: " % i, weights[i]._rowwise_data.shape)
+                        if weights[i]._columnwise_data is not None:
+                            print("weights[%d]._columnwise_data: " % i, weights[i]._columnwise_data.shape)
+                        if weights[i]._rowwise_scale_inv is not None:
+                            print("weights[%d]._rowwise_scale_inv: " % i, weights[i]._rowwise_scale_inv.shape)
+                        if weights[i]._columnwise_scale_inv is not None:
+                            print("weights[%d]._columnwise_scale_inv: " % i, weights[i]._columnwise_scale_inv.shape)
+                        if grad_output[i]._rowwise_data is not None:    
+                            print("grad_output[%d]._rowwise_data: " % i, grad_output[i]._rowwise_data.shape)
+                        if grad_output[i]._columnwise_data is not None:
+                            print("grad_output[%d]._columnwise_data: " % i, grad_output[i]._columnwise_data.shape)
+                        if grad_output[i]._rowwise_scale_inv is not None:
+                            print("grad_output[%d]._rowwise_scale_inv: " % i, grad_output[i]._rowwise_scale_inv.shape)
+                        if grad_output[i]._columnwise_scale_inv is not None:
+                            print("grad_output[%d]._columnwise_scale_inv: " % i, grad_output[i]._columnwise_scale_inv.shape)
+                        if dgrad._rowwise_data is not None:
+                            print("dgrad._rowwise_data: ", dgrad._rowwise_data.shape)
+                        if dgrad._columnwise_data is not None:
+                            print("dgrad._columnwise_data: ", dgrad._columnwise_data.shape)
+                        if out is not None:
+                            print("out: ", out.shape)
+
                 general_grouped_gemm(
                     weights,
                     grad_output,

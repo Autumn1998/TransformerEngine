@@ -264,7 +264,7 @@ class MXFP8TensorBase(QuantizedTensorBase):
         Update columnwise data and columnwise scale inv.
         """
         self._rowwise_data = self._rowwise_data.contiguous()
-        rowwise_shape = self._rowwise_data.reshape(-1, self._rowwise_data.shape[-1]).shape
+        rowwise_shape = self._rowwise_data.shape
         columnwise_shape = (rowwise_shape[-1], rowwise_shape[0])
         columnwise_scale_inv_shape = (
             (rowwise_shape[-1] + 128 - 1) // 128 * 128,
