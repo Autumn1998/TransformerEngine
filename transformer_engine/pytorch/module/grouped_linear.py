@@ -172,6 +172,18 @@ class _GroupedLinear(torch.autograd.Function):
             if hasattr(recipe, "fp8_gemm_fprop"):
                 use_split_accumulator = recipe.fp8_gemm_fprop.use_split_accumulator
 
+        if torch.distributed.get_rank() == 0:
+            for i in range(num_gemms):
+                print("weights_fp8[%d]._rowwise_data: " % i, weights_fp8[i]._rowwise_data.shape)
+                print("weights_fp8[%d]._columnwise_data: " % i, weights_fp8[i]._columnwise_data.shape)
+                print("weights_fp8[%d]._rowwise_scale_inv: " % i, weights_fp8[i]._rowwise_scale_inv.shape)
+                print("weights_fp8[%d]._columnwise_scale_inv: " % i, weights_fp8[i]._columnwise_scale_inv.shape)
+                print("inputmats[%d]._rowwise_data: " % i, inputmats[i]._rowwise_data.shape)
+                print("inputmats[%d]._columnwise_data: " % i, inputmats[i]._columnwise_data.shape)
+                print("inputmats[%d]._rowwise_scale_inv: " % i, inputmats[i]._rowwise_scale_inv.shape)
+                print("inputmats[%d]._columnwise_scale_inv: " % i, inputmats[i]._columnwise_scale_inv.shape)
+                print("out: ", out.shape)
+
         # Perform GEMM
         _ = general_grouped_gemm(
             weights_fp8,
