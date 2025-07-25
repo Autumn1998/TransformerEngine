@@ -134,7 +134,7 @@ class _Fp8Padding(torch.autograd.Function):
                 grad_output.view(-1, in_features), grad_input, ctx.padded_m_splits, ctx.m_splits
             )
 
-        return (grad_input, None, None, None)
+        return (grad_input, None, None, None, None)
 
 
 class Fp8Padding(torch.nn.Module):
