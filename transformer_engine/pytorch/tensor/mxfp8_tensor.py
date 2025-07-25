@@ -292,13 +292,16 @@ class MXFP8Tensor(MXFP8TensorBase, QuantizedTensor):
 
         in_features = self._rowwise_data.shape[-1]
         scale_in_features = self._rowwise_scale_inv.shape[1]
+        padded_scale_splits = [
+            (m + 128 - 1) // 128 * 128 for m in split_size_or_sections
+        ]
 
         rowwise_mats = torch.split(
             self._rowwise_data.view(-1, in_features), split_size_or_sections, dim=0
         )
         rowwise_scale_inv_mats = torch.split(
             self._rowwise_scale_inv.view(-1, scale_in_features),
-            split_size_or_sections,
+            padded_scale_splits,
             dim=0,
         )
 
@@ -310,7 +313,7 @@ class MXFP8Tensor(MXFP8TensorBase, QuantizedTensor):
             )
             columnwise_scale_inv_mats = torch.split(
                 self._columnwise_scale_inv.view(scale_in_features, -1),
-                split_size_or_sections,
+                padded_scale_splits,
                 dim=1,
             )
 
