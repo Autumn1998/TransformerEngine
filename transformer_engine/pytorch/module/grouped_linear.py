@@ -330,7 +330,8 @@ class _GroupedLinear(torch.autograd.Function):
                         # If the input grad_output is quantized
                         grad_output_mats = grad_output_view.split(ctx.m_splits)
                         for grad_output_mat in grad_output_mats:
-                            grad_output_mat._make_tensor_gemm_ready()
+                            if isinstance(grad_output_mat, Float8BlockwiseQTensorBase): 
+                                grad_output_mat._make_tensor_gemm_ready()
                             # Dequantize -> transpose -> quantize
                             grad_output_mat.update_usage(rowwise_usage=True, columnwise_usage=True)
                         grad_output = grad_output_mats
