@@ -1006,7 +1006,7 @@ class _LayerNormLinear(torch.autograd.Function):
                         list(origin_weight.main_grad.shape),
                         origin_weight.dtype,
                     )
-            elif ctx.fuse_wgrad_accumulation:
+            elif ctx.fuse_wgrad_accumulation and not ctx.fine_grained_activation_offloading:
                 wgrad = None
         else:
             wgrad = None
